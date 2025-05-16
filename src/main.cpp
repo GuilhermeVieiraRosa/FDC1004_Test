@@ -4,6 +4,7 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <Protocentral_FDC1004.h>
+#include <M5Unified.h>
 
 /************************************************************
  *                      PIN DEF
@@ -21,6 +22,7 @@
 #define INTERVAL 10                     // 10ms for 100Hz
 
 FDC1004 FDC;
+
 /************************************************************
  *                      CODE
  ************************************************************/ 
@@ -32,6 +34,9 @@ void setup()
 {
   Wire.begin(I2C_SDA, I2C_SCL);
   Serial.begin(115200);
+  M5.Lcd.begin();
+  M5.Lcd.setRotation(3);
+  M5.Lcd.setTextSize(3);
 }
 
 /*
@@ -51,17 +56,20 @@ void loop()
   float minValue = 0.0;
   float maxValue = 0.0;
 
+  int16_t cursorX = 0;
+  int16_t cursorY = 0;
 
   // Init time variables
   lastMillis[0] = millis();
   lastMillis[1] = millis();
 
+  // System cicle
   while(1)
   {
     // Every system cicle
     currentMillis = millis();
 
-    // Every interval of time
+    // Every 10 milisec
     if (currentMillis - lastMillis[0] >= INTERVAL)
     {
       // Update time
@@ -120,18 +128,29 @@ void loop()
       FDC.triggerSingleMeasurement(MEASURMENT, FDC1004_400HZ);
     }
 
-    // Every 1 sec
-    if(currentMillis - lastMillis[1] >= INTERVAL*100 && averageSum)
+    // Every 5000 milisec
+    if(currentMillis - lastMillis[1] >= INTERVAL*500)
     {
       // Update time
-      lastMillis[1] += INTERVAL*100;
+      lastMillis[1] += INTERVAL*500;
 
-      // Serial Print Average 
-      Serial.printf("Average: %7.3f pF || ", averageSum/averageCount);
-      Serial.printf("Min: %7.3f pF || ", minValue);
-      Serial.printf("Max: %7.3f pF || ", maxValue);
-      Serial.printf("Variation: %7.3f pF || ", maxValue - minValue);
-      Serial.printf("Samples: %d\r\n", averageCount);
+      // If averageSum is not zero, print data
+      if(averageSum)
+      {
+        // Serial Print Average 
+        Serial.printf("Average: %7.3f pF || ", averageSum/averageCount);
+        Serial.printf("Min: %7.3f pF || ", minValue);
+        Serial.printf("Max: %7.3f pF || ", maxValue);
+        Serial.printf("Variation: %7.3f pF || ", maxValue - minValue);
+        Serial.printf("Samples: %d\r\n", averageCount);
+
+        // LCD Print Average
+        M5.Lcd.fillRect(0, 0, 30, 250, BLACK);
+        if(cursorY > 180) cursorY = 0;
+        M5.Lcd.setCursor(cursorX, cursorY);
+        cursorY += 30;
+        M5.Lcd.print("> " + String(averageSum/averageCount, 4) + " ");
+      }
 
       // Reset Average Variables
       averageSum = 0;
@@ -139,7 +158,7 @@ void loop()
       minValue = 0.0;
       maxValue = 0.0;
 
-      // Reset capdac if it is max for 3 sec  
+      // If capdac is max for 3 5 sec cicles, Reset capdac
       if(capdac == FDC1004_CAPDAC_MAX)
         capdacResetFlag++;
       if(capdacResetFlag > 2)
