@@ -5,6 +5,7 @@
 #include <Wire.h>
 #include <Protocentral_FDC1004.h>
 #include <M5Unified.h>
+#include <math.h>
 
 /************************************************************
  *                      PIN DEF
@@ -45,16 +46,23 @@ void setup()
 void loop()
 {
   // Variables
+  float vector[600];
   char result[100];
   uint8_t capdacResetFlag = 0;
   int32_t capdac = 0;
+  uint32_t iter = 0;
+  uint32_t i = 0;
   uint64_t lastMillis[] = {0, 0};
   uint64_t currentMillis = 0;
 
+  float average = 0.0;
   int32_t averageCount = 0;
   float averageSum = 0.0;
   float minValue = 0.0;
   float maxValue = 0.0;
+  float variance = 0.0;
+  float varianceSum = 0.0;
+  float deviation = 0.0;
 
   int16_t cursorX = 0;
   int16_t cursorY = 0;
@@ -90,6 +98,8 @@ void loop()
         float offset = ((float) (capdac))*3.125;
         float cap = ((float) ((float) byte / 0x00080000));
         float total = offset + cap;
+
+        vector[iter++] = total;
 
         // Avarege and min max values
         averageSum += total;
@@ -137,11 +147,23 @@ void loop()
       // If averageSum is not zero, print data
       if(averageSum)
       {
+        // Average
+        average = averageSum / averageCount;
+
+        // Standard Deviation 
+        for(i = 0; i < iter; i++)
+        {
+          varianceSum += pow(vector[i] - average, 2);
+        }
+        variance = varianceSum / averageCount;
+        deviation = sqrt(variance);
+
         // Serial Print Average 
-        Serial.printf("Average: %7.3f pF || ", averageSum/averageCount);
+        Serial.printf("Average: %7.3f pF || ", average);
         Serial.printf("Min: %7.3f pF || ", minValue);
         Serial.printf("Max: %7.3f pF || ", maxValue);
-        Serial.printf("Variation: %7.3f pF || ", maxValue - minValue);
+        Serial.printf("Span: %7.3f pF || ", maxValue - minValue);
+        Serial.printf("Deviation: %7.3e pF || ",  deviation);
         Serial.printf("Samples: %d\r\n", averageCount);
 
         // LCD Print Average
@@ -149,14 +171,19 @@ void loop()
         if(cursorY > 180) cursorY = 0;
         M5.Lcd.setCursor(cursorX, cursorY);
         cursorY += 30;
-        M5.Lcd.print("> " + String(averageSum/averageCount, 4) + " ");
+        M5.Lcd.print("> " + String(average, 4) + " ");
+        M5.Lcd.print(String(deviation, 6));
       }
 
       // Reset Average Variables
+      iter = 0;
       averageSum = 0;
       averageCount = 0;
       minValue = 0.0;
       maxValue = 0.0;
+      variance = 0.0;
+      varianceSum = 0.0;
+      deviation = 0.0;
 
       // If capdac is max for 3 5 sec cicles, Reset capdac
       if(capdac == FDC1004_CAPDAC_MAX)
