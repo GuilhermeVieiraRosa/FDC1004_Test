@@ -4,14 +4,13 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <Protocentral_FDC1004.h>
-#include <M5Unified.h>
 #include <math.h>
 
 /************************************************************
  *                      PIN DEF
  ************************************************************/ 
-#define I2C_SDA 21 // ESP32 SDA on GPIO21
-#define I2C_SCL 22 // ESP32 SCL on GPIO22
+#define I2C_SDA 40 // ESP32 SDA on GPIO21
+#define I2C_SCL 41 // ESP32 SCL on GPIO22
 
 /************************************************************
  *                      CONSTANTS
@@ -24,6 +23,35 @@
 
 FDC1004 FDC;
 
+#define TMP117_ADDR 0X48
+
+/************************************************************
+ *                      STRUCTS
+ ************************************************************/ 
+
+typedef struct {
+  float average;
+  int32_t averageCount;
+  float averageSum;
+  float minValue;
+  float maxValue;
+  float variance;
+  float varianceSum;
+  float deviation;
+
+  float vector[600];
+} Data;
+
+/************************************************************
+ *                      METHODS
+ ************************************************************/ 
+
+void main_adjustCapdac(uint16_t msb, int32_t* capdac);
+void main_resetCapdac(int32_t* capdac, uint8_t* capdacResetFlag);
+void main_dataInit(Data* data);
+void main_dataCalc(Data* data, uint32_t index);
+void main_dataPrint(Data* data);
+
 /************************************************************
  *                      CODE
  ************************************************************/ 
@@ -33,11 +61,14 @@ FDC1004 FDC;
  */
 void setup()
 {
+  USBSerial.begin(115200);
+  while (!USBSerial) {
+    delay(10);  // Aguarda a conexão com o host
+  }
+  delay(1000);
+  USBSerial.println("TCC FDC1004 GUILHERME E ODAIR");
+
   Wire.begin(I2C_SDA, I2C_SCL);
-  Serial.begin(115200);
-  M5.Lcd.begin();
-  M5.Lcd.setRotation(3);
-  M5.Lcd.setTextSize(3);
 }
 
 /*
@@ -46,26 +77,14 @@ void setup()
 void loop()
 {
   // Variables
-  float vector[600];
-  char result[100];
   uint8_t capdacResetFlag = 0;
   int32_t capdac = 0;
-  uint32_t iter = 0;
-  uint32_t i = 0;
+  uint32_t index = 0;
   uint64_t lastMillis[] = {0, 0};
   uint64_t currentMillis = 0;
 
-  float average = 0.0;
-  int32_t averageCount = 0;
-  float averageSum = 0.0;
-  float minValue = 0.0;
-  float maxValue = 0.0;
-  float variance = 0.0;
-  float varianceSum = 0.0;
-  float deviation = 0.0;
-
-  int16_t cursorX = 0;
-  int16_t cursorY = 0;
+  Data data;
+  main_dataInit(&data);
 
   // Init time variables
   lastMillis[0] = millis();
@@ -99,38 +118,18 @@ void loop()
         float cap = ((float) ((float) byte / 0x00080000));
         float total = offset + cap;
 
-        vector[iter++] = total;
+        // Store data
+        data.vector[index++] = total;
+        data.averageSum += total;
+        data.averageCount++;
 
-        // Avarege and min max values
-        averageSum += total;
-        averageCount++;
-        if(total > maxValue)
-          maxValue = total;
-        if(total < minValue || minValue == 0)
-          minValue = total;
-
-        // Old capacitance convert method
-        int32_t capacitance = ((int32_t)457) * ((int32_t)msb); // in attofarads
-        capacitance /= 1000;   // in femtofarads
-        capacitance += ((int32_t)3028) * ((int32_t)capdac);
-        
-        // Serial Print
-        // Serial.printf("offset: %7.3f pF || ", offset);
-        // Serial.printf("capac:  %7.3f pF || ", cap);
-        // Serial.printf("total:  %7.3f pF || \r\n", total);
-        // Serial.println((((float)capacitance / 1000)), 4);
+        if(total > data.maxValue)
+          data.maxValue = total;
+        if(total < data.minValue || data.minValue == 0)
+          data.minValue = total;
         
         // Adjust CAPDAC (if needed)
-        if (msb > UPPER_BOUND)
-        {
-          if (capdac < FDC1004_CAPDAC_MAX)
-            capdac++;
-        }
-        else if (msb < LOWER_BOUND)
-        {
-          if (capdac > 0)
-            capdac--;
-        }
+        main_adjustCapdac(msb, &capdac);
       }
 
       // Trigger Measurement
@@ -145,54 +144,87 @@ void loop()
       lastMillis[1] += INTERVAL*500;
 
       // If averageSum is not zero, print data
-      if(averageSum)
+      if(data.averageSum)
       {
-        // Average
-        average = averageSum / averageCount;
-
-        // Standard Deviation 
-        for(i = 0; i < iter; i++)
-        {
-          varianceSum += pow(vector[i] - average, 2);
-        }
-        variance = varianceSum / averageCount;
-        deviation = sqrt(variance);
+        // Data calc
+        main_dataCalc(&data, index);
 
         // Serial Print Average 
-        Serial.printf("Average: %7.3f pF || ", average);
-        Serial.printf("Min: %7.3f pF || ", minValue);
-        Serial.printf("Max: %7.3f pF || ", maxValue);
-        Serial.printf("Span: %7.3f pF || ", maxValue - minValue);
-        Serial.printf("Deviation: %7.3e pF || ",  deviation);
-        Serial.printf("Samples: %d\r\n", averageCount);
-
-        // LCD Print Average
-        M5.Lcd.fillRect(0, 0, 30, 250, BLACK);
-        if(cursorY > 180) cursorY = 0;
-        M5.Lcd.setCursor(cursorX, cursorY);
-        cursorY += 30;
-        M5.Lcd.print("> " + String(average, 4) + " ");
-        M5.Lcd.print(String(deviation, 6));
+        main_dataPrint(&data);
       }
 
       // Reset Average Variables
-      iter = 0;
-      averageSum = 0;
-      averageCount = 0;
-      minValue = 0.0;
-      maxValue = 0.0;
-      variance = 0.0;
-      varianceSum = 0.0;
-      deviation = 0.0;
+      index = 0;
+      main_dataInit(&data);
 
       // If capdac is max for 3 5 sec cicles, Reset capdac
-      if(capdac == FDC1004_CAPDAC_MAX)
-        capdacResetFlag++;
-      if(capdacResetFlag > 2)
-      {
-        capdac = 0;
-        capdacResetFlag = 0;
-      }
+      main_resetCapdac(&capdac, &capdacResetFlag);
     }
   }
+}
+
+void main_adjustCapdac(uint16_t msb, int32_t* capdac)
+{
+  if (msb > UPPER_BOUND)
+  {
+    if (*capdac < FDC1004_CAPDAC_MAX)
+      *capdac++;
+  }
+  else if (msb < LOWER_BOUND)
+  {
+    if (*capdac > 0)
+      *capdac--;
+  }
+}
+
+void main_resetCapdac(int32_t* capdac, uint8_t* capdacResetFlag)
+{
+  if(*capdac == FDC1004_CAPDAC_MAX)
+    *capdacResetFlag++;
+  if(*capdacResetFlag > 2)
+  {
+    *capdac = 0;
+    *capdacResetFlag = 0;
+  }
+}
+
+void main_dataInit(Data* data)
+{
+  data->average = 0.0;
+  data->averageCount = 0;
+  data->averageSum = 0.0;
+
+  data->minValue = 0.0;
+  data->maxValue = 0.0;
+
+  data->variance = 0.0;
+  data->varianceSum = 0.0;
+
+  data->deviation = 0.0;
+}
+
+void main_dataCalc(Data* data, uint32_t index)
+{
+  uint32_t i = 0;
+
+  // Average
+  data->average = data->averageSum / data->averageCount;
+
+  // Standard Deviation 
+  for(i = 0; i < index; i++)
+  {
+    data->varianceSum += pow(data->vector[i] - data->average, 2);
+  }
+  data->variance = data->varianceSum / data->averageCount;
+  data->deviation = sqrt(data->variance);
+}
+
+void main_dataPrint(Data* data)
+{
+  USBSerial.printf("Average: %7.3f pF || ", data->average);
+  USBSerial.printf("Min: %7.3f pF || ", data->minValue);
+  USBSerial.printf("Max: %7.3f pF || ", data->maxValue);
+  USBSerial.printf("Span: %7.3f pF || ", data->maxValue - data->minValue);
+  USBSerial.printf("Deviation: %7.3e pF || ",  data->deviation);
+  USBSerial.printf("Samples: %d\r\n", data->averageCount);
 }
