@@ -3,8 +3,9 @@
  ************************************************************/ 
 #include <Arduino.h>
 #include <Wire.h>
-#include <Protocentral_FDC1004.h>
 #include <math.h>
+#include <Protocentral_FDC1004.h>
+#include <TMP117.h>
 
 /************************************************************
  *                      PIN DEF
@@ -19,11 +20,16 @@
 #define LOWER_BOUND  (-1 * UPPER_BOUND) // min readout capacitance
 #define CHANNEL 0
 #define MEASURMENT 0
-#define INTERVAL 10                     // 10ms for 100Hz
+#define INTERVAL_10MS   10                     // 10ms for 100Hz
+#define INTERVAL_1000MS 1000
+#define INTERVAL_5000MS 5000
+
+#define TEMP_SET_POINT 25.0
+#define HYSTERESIS 0.1*TEMP_SET_POINT
+#define TMP117_ADDR 0X48
 
 FDC1004 FDC;
-
-#define TMP117_ADDR 0X48
+TMP117 TMP(TMP117_ADDR);
 
 /************************************************************
  *                      STRUCTS
@@ -40,6 +46,8 @@ typedef struct {
   float deviation;
 
   float vector[600];
+
+  double temperature;
 } Data;
 
 /************************************************************
@@ -69,6 +77,10 @@ void setup()
   USBSerial.println("TCC FDC1004 GUILHERME E ODAIR");
 
   Wire.begin(I2C_SDA, I2C_SCL);
+
+  // TMP.init(NULL);
+  // TMP.setConvMode(TMP117_CMODE::ONESHOT);
+  TMP.softReset();
 }
 
 /*
@@ -86,9 +98,12 @@ void loop()
   Data data;
   main_dataInit(&data);
 
+  uint8_t dutyCicle = 0;
+
   // Init time variables
   lastMillis[0] = millis();
   lastMillis[1] = millis();
+  lastMillis[2] = millis();
 
   // System cicle
   while(1)
@@ -97,10 +112,10 @@ void loop()
     currentMillis = millis();
 
     // Every 10 milisec
-    if (currentMillis - lastMillis[0] >= INTERVAL)
+    if (currentMillis - lastMillis[0] >= INTERVAL_10MS)
     {
       // Update time
-      lastMillis[0] += INTERVAL;
+      lastMillis[0] += INTERVAL_10MS;
 
       // Read FDC measurement
       uint16_t value[2];
@@ -137,11 +152,36 @@ void loop()
       FDC.triggerSingleMeasurement(MEASURMENT, FDC1004_400HZ);
     }
 
-    // Every 5000 milisec
-    if(currentMillis - lastMillis[1] >= INTERVAL*500)
+    // Every 1000 milisec
+    if(currentMillis - lastMillis[1] >= INTERVAL_1000MS)
     {
       // Update time
-      lastMillis[1] += INTERVAL*500;
+      lastMillis[1] += INTERVAL_1000MS;
+
+      // // Temperature Pulling
+      // data.temperature = TMP.getTemperature(); 
+      // USBSerial.printf("Temperature: %7.3f\r\n", data.temperature);
+      // if (data.temperature)
+      // {
+      //   // Check dutyCicle 
+      //   if(data.temperature > TEMP_SET_POINT + HYSTERESIS)
+      //   {
+      //     if(dutyCicle > 0x00) dutyCicle--;
+      //   }
+      //   else if (data.temperature < TEMP_SET_POINT - HYSTERESIS)
+      //   {
+      //     if(dutyCicle < 0xFF) dutyCicle++;
+      //   }
+      // }
+
+      
+    }
+
+    // Every 5000 milisec
+    if(currentMillis - lastMillis[2] >= INTERVAL_5000MS)
+    {
+      // Update time
+      lastMillis[2] += INTERVAL_5000MS;
 
       // If averageSum is not zero, print data
       if(data.averageSum)
@@ -201,6 +241,8 @@ void main_dataInit(Data* data)
   data->varianceSum = 0.0;
 
   data->deviation = 0.0;
+
+  data->temperature = 0.0;
 }
 
 void main_dataCalc(Data* data, uint32_t index)
