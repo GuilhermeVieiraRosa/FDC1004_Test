@@ -3,8 +3,8 @@
  ************************************************************/ 
 #include <Arduino.h>
 #include <Wire.h>
-#include <Protocentral_FDC1004.h>
 #include <math.h>
+#include <Protocentral_FDC1004.h>
 
 /************************************************************
  *                      PIN DEF
@@ -19,11 +19,16 @@
 #define LOWER_BOUND  (-1 * UPPER_BOUND) // min readout capacitance
 #define CHANNEL 0
 #define MEASURMENT 0
-#define INTERVAL 10                     // 10ms for 100Hz
+#define INTERVAL_10MS   10                     // 10ms for 100Hz
+#define INTERVAL_1000MS 1000
+#define INTERVAL_5000MS 5000
+
+#define TEMP_SET_POINT 25.0
+#define HYSTERESIS 0.1*TEMP_SET_POINT
+#define TMP117_ADDR 0X48
+#define TMP117_CONFIG 0x01
 
 FDC1004 FDC;
-
-#define TMP117_ADDR 0X48
 
 /************************************************************
  *                      STRUCTS
@@ -40,6 +45,8 @@ typedef struct {
   float deviation;
 
   float vector[600];
+
+  double temperature;
 } Data;
 
 /************************************************************
@@ -51,6 +58,10 @@ void main_resetCapdac(int32_t* capdac, uint8_t* capdacResetFlag);
 void main_dataInit(Data* data);
 void main_dataCalc(Data* data, uint32_t index);
 void main_dataPrint(Data* data);
+void tmp117_writeRegister(uint8_t reg, uint16_t value);
+uint16_t tmp117_readRegister(uint8_t reg);
+float tmp117_readTemperature(void);
+void tmp117_init(void);
 
 /************************************************************
  *                      CODE
@@ -80,8 +91,10 @@ void loop()
   uint8_t capdacResetFlag = 0;
   int32_t capdac = 0;
   uint32_t index = 0;
-  uint64_t lastMillis[] = {0, 0};
+  uint64_t lastMillis[] = {0, 0, 0};
   uint64_t currentMillis = 0;
+
+  uint8_t dutyCicle = 0;
 
   Data data;
   main_dataInit(&data);
@@ -89,6 +102,10 @@ void loop()
   // Init time variables
   lastMillis[0] = millis();
   lastMillis[1] = millis();
+  lastMillis[2] = millis();
+
+  // TMP117
+  tmp117_init();
 
   // System cicle
   while(1)
@@ -97,10 +114,10 @@ void loop()
     currentMillis = millis();
 
     // Every 10 milisec
-    if (currentMillis - lastMillis[0] >= INTERVAL)
+    if (currentMillis - lastMillis[0] >= INTERVAL_10MS)
     {
       // Update time
-      lastMillis[0] += INTERVAL;
+      lastMillis[0] += INTERVAL_10MS;
 
       // Read FDC measurement
       uint16_t value[2];
@@ -137,11 +154,22 @@ void loop()
       FDC.triggerSingleMeasurement(MEASURMENT, FDC1004_400HZ);
     }
 
-    // Every 5000 milisec
-    if(currentMillis - lastMillis[1] >= INTERVAL*500)
+    // Every 1000 milisec
+    if(currentMillis - lastMillis[1] >= INTERVAL_1000MS)
     {
       // Update time
-      lastMillis[1] += INTERVAL*500;
+      lastMillis[1] += INTERVAL_1000MS;
+
+      // Temperature Polling
+      data.temperature = tmp117_readTemperature();
+      USBSerial.printf("Temperature: %7.3f pF\r\n", data.temperature);
+    }
+    
+    // Every 5000 milisec
+    if(currentMillis - lastMillis[2] >= INTERVAL_5000MS)
+    {
+      // Update time
+      lastMillis[2] += INTERVAL_5000MS;
 
       // If averageSum is not zero, print data
       if(data.averageSum)
@@ -201,6 +229,8 @@ void main_dataInit(Data* data)
   data->varianceSum = 0.0;
 
   data->deviation = 0.0;
+
+  data->temperature = 0.0;
 }
 
 void main_dataCalc(Data* data, uint32_t index)
@@ -227,4 +257,39 @@ void main_dataPrint(Data* data)
   USBSerial.printf("Span: %7.3f pF || ", data->maxValue - data->minValue);
   USBSerial.printf("Deviation: %7.3e pF || ",  data->deviation);
   USBSerial.printf("Samples: %d\r\n", data->averageCount);
+}
+
+// Function to write a 16-bit value to a TMP117 register
+void tmp117_writeRegister(uint8_t reg, uint16_t value)
+{
+  Wire.beginTransmission(TMP117_ADDR);
+  Wire.write(reg);                 // Register address
+  Wire.write((value >> 8) & 0xFF); // MSB
+  Wire.write(value & 0xFF);        // LSB
+  Wire.endTransmission();
+}
+
+// Function to read a 16-bit value from a TMP117 register
+uint16_t tmp117_readRegister(uint8_t reg)
+{
+  Wire.beginTransmission(TMP117_ADDR);
+  Wire.write(reg);             // Register address
+  Wire.endTransmission(false); // Restart condition
+
+  Wire.requestFrom(TMP117_ADDR, 2);                  // Request 2 bytes
+  uint16_t value = (Wire.read() << 8) | Wire.read(); // MSB | LSB
+  return value;
+}
+
+// Function to read the temperature in Celsius
+float tmp117_readTemperature(void)
+{
+  uint16_t raw_temp = tmp117_readRegister(0);
+  return raw_temp * 0.0078125; // TMP117 temperature resolution
+}
+
+// Function to init the temperature sensor tmp117
+void tmp117_init(void)
+{
+  tmp117_writeRegister(TMP117_CONFIG, 0);
 }
