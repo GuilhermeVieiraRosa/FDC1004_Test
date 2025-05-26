@@ -5,30 +5,51 @@
 #include <Wire.h>
 #include <math.h>
 #include <Protocentral_FDC1004.h>
+#include <PID_v1.h>
 
 /************************************************************
  *                      PIN DEF
  ************************************************************/ 
-#define I2C_SDA 40 // ESP32 SDA on GPIO21
-#define I2C_SCL 41 // ESP32 SCL on GPIO22
+#define I2C_SDA 40
+#define I2C_SCL 41
+#define HEATER_PIN 2
 
 /************************************************************
  *                      CONSTANTS
- ************************************************************/ 
+ ************************************************************/
+// Timers
+#define INTERVAL_10MS   10                     // 10ms for 100Hz
+#define INTERVAL_100MS  100
+#define INTERVAL_5000MS 5000
+
+// FDC
 #define UPPER_BOUND  0X4000             // max readout capacitance
 #define LOWER_BOUND  (-1 * UPPER_BOUND) // min readout capacitance
 #define CHANNEL 0
 #define MEASURMENT 0
-#define INTERVAL_10MS   10                     // 10ms for 100Hz
-#define INTERVAL_1000MS 1000
-#define INTERVAL_5000MS 5000
+FDC1004 FDC;
 
-#define TEMP_SET_POINT 25.0
-#define HYSTERESIS 0.1*TEMP_SET_POINT
+// TMP
 #define TMP117_ADDR 0X48
 #define TMP117_CONFIG 0x01
 
-FDC1004 FDC;
+// PID
+#define HEATER_EN
+#define PWM_PIN HEATER_PIN  // GPIO2 for heater control
+#define PWM_CHANNEL 0       // LEDC PWM channel
+#define PWM_FREQ 1000       // PWM frequency in Hz
+#define PWM_RESOLUTION 12   // PWM resolution
+#define PWM_SET_POINT 25.0
+// PID parameters
+double Setpoint = 40.0; // Target temperature in °C
+double Input = 0.0;     // Current temperature (updated at 64 Hz)
+double Output = 0.0;    // PID output
+// PID tuning parameters (adjust as needed)
+double Kp = 40; // Proportional gain  40        84.4;
+double Ki = 1;  // Integral gain      1         7.74;
+double Kd = 0;  // Derivative gain    0.019     229.57;
+// PID Object
+PID myPID(&Input, &Output, &Setpoint, Kp, Ki, Kd, DIRECT);
 
 /************************************************************
  *                      STRUCTS
@@ -72,6 +93,7 @@ void tmp117_init(void);
  */
 void setup()
 {
+  // Serial
   USBSerial.begin(115200);
   while (!USBSerial) {
     delay(10);  // Aguarda a conexão com o host
@@ -79,7 +101,19 @@ void setup()
   delay(1000);
   USBSerial.println("TCC FDC1004 GUILHERME E ODAIR");
 
+  // I2C
   Wire.begin(I2C_SDA, I2C_SCL);
+
+  // PID
+#ifdef HEATER_EN
+  ledcSetup(PWM_CHANNEL, PWM_FREQ, PWM_RESOLUTION);
+  ledcAttachPin(PWM_PIN, PWM_CHANNEL);
+
+  // Initialize the PID controller
+  myPID.SetMode(AUTOMATIC);
+  myPID.SetOutputLimits(0, (1 << PWM_RESOLUTION) - 1); // Match PWM range
+  myPID.SetSampleTime(1000 / 10.0);                    // Match 10 Hz sample rate
+#endif
 }
 
 /*
@@ -155,14 +189,24 @@ void loop()
     }
 
     // Every 1000 milisec
-    if(currentMillis - lastMillis[1] >= INTERVAL_1000MS)
+    if(currentMillis - lastMillis[1] >= INTERVAL_100MS)
     {
       // Update time
-      lastMillis[1] += INTERVAL_1000MS;
+      lastMillis[1] += INTERVAL_100MS;
 
       // Temperature Polling
       data.temperature = tmp117_readTemperature();
-      USBSerial.printf("Temperature: %7.3f pF\r\n", data.temperature);
+      Input = data.temperature;
+
+      // PID
+#ifndef PID_TEST
+      // Compute the PID output
+      if (myPID.Compute())
+      {
+        // Apply the PID output to the PWM pin
+        ledcWrite(PWM_CHANNEL, (uint32_t)Output);
+      }
+#endif
     }
     
     // Every 5000 milisec
@@ -256,7 +300,9 @@ void main_dataPrint(Data* data)
   USBSerial.printf("Max: %7.3f pF || ", data->maxValue);
   USBSerial.printf("Span: %7.3f pF || ", data->maxValue - data->minValue);
   USBSerial.printf("Deviation: %7.3e pF || ",  data->deviation);
-  USBSerial.printf("Samples: %d\r\n", data->averageCount);
+  USBSerial.printf("Samples: %d || ", data->averageCount);
+  USBSerial.printf("Temperature: %7.3f °C || ", data->temperature);
+  USBSerial.printf("DutyCicle: %7.3f %%\r\n", 100 * Output / ((1 << PWM_RESOLUTION) - 1));
 }
 
 // Function to write a 16-bit value to a TMP117 register
